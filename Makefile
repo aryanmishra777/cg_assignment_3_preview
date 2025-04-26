@@ -1,37 +1,51 @@
+# Compiler and flags
 CXX = g++
-CXXFLAGS = -std=c++17 -Wall -Wextra -O2
-INCLUDES = -Iinclude -Isrc
+CXXFLAGS = -std=c++17 -Wall -Wextra -O2 -I$(SRC_DIR) -I$(IMGUI_DIR)
 LDFLAGS = -lGL -lGLEW -lglfw -ldl
 
-# List of source files
-SOURCES = $(wildcard src/*.cpp) \
-          $(wildcard src/mesh/*.cpp) \
-          $(wildcard src/rasterization/*.cpp) \
-          $(wildcard src/scan_conversion/*.cpp) \
-          $(wildcard src/raytracing/*.cpp) \
-          $(wildcard src/ui/*.cpp) \
-		  $(wildcard imgui/*.cpp) \
-		  $(wildcard imgui/backends/*.cpp) \
+# Directories
+SRC_DIR = src
+IMGUI_DIR = imgui
+BUILD_DIR = build
+SHADER_DIR = shaders
+MODEL_DIR = models
 
-# Object files
-OBJECTS = $(SOURCES:.cpp=.o)
+# Source files
+SRC_FILES = $(wildcard $(SRC_DIR)/*.cpp)
+IMGUI_FILES = $(wildcard $(IMGUI_DIR)/*.cpp)
+IMGUI_BACKEND_FILES = $(wildcard $(IMGUI_DIR)/backends/*.cpp)
 
-# Binary name
-TARGET = final_countdown
+SRC_OBJ_FILES = $(patsubst $(SRC_DIR)/%.cpp,$(BUILD_DIR)/%.o,$(SRC_FILES))
+IMGUI_OBJ_FILES = $(patsubst $(IMGUI_DIR)/%.cpp,$(BUILD_DIR)/imgui_%.o,$(IMGUI_FILES))
+IMGUI_BACKEND_OBJ_FILES = $(patsubst $(IMGUI_DIR)/backends/%.cpp,$(BUILD_DIR)/imgui_backends_%.o,$(IMGUI_BACKEND_FILES))
+
+OBJ_FILES = $(SRC_OBJ_FILES) $(IMGUI_OBJ_FILES) $(IMGUI_BACKEND_OBJ_FILES)
+
+# Targets
+TARGET = graphics_app
 
 # Rules
-all: dirs $(TARGET)
+.PHONY: all clean
 
-dirs:
-	@mkdir -p bin
+all: $(BUILD_DIR) $(TARGET)
 
-$(TARGET): $(OBJECTS)
-	$(CXX) $^ -o $@ $(LDFLAGS)
+$(BUILD_DIR):
+	mkdir -p $(BUILD_DIR)
 
-%.o: %.cpp
-	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
+$(TARGET): $(OBJ_FILES)
+	$(CXX) $(CXXFLAGS) -o $@ $^ $(LDFLAGS)
+
+$(BUILD_DIR)/%.o: $(SRC_DIR)/%.cpp
+	$(CXX) $(CXXFLAGS) -c -o $@ $<
+
+$(BUILD_DIR)/imgui_%.o: $(IMGUI_DIR)/%.cpp
+	$(CXX) $(CXXFLAGS) -c -o $@ $<
+
+$(BUILD_DIR)/imgui_backends_%.o: $(IMGUI_DIR)/backends/%.cpp
+	$(CXX) $(CXXFLAGS) -c -o $@ $<
 
 clean:
-	rm -f $(OBJECTS) $(TARGET)
+	rm -rf $(BUILD_DIR) $(TARGET)
 
-.PHONY: all clean dirs
+run: $(TARGET)
+	./$(TARGET)
