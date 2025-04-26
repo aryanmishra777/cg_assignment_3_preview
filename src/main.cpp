@@ -233,6 +233,16 @@ void update() {
             break;
             
         case VIEW_RAYTRACE:
+            // Synchronize raytracer camera with the "drone" camera
+            glm::vec3 pos(camera_pos[0], camera_pos[1], camera_pos[2]);
+            glm::vec3 look = pos + camera_front; // Where the OpenGL camera is looking
+            glm::vec3 up = camera_up;
+            raytracer->getCamera().setPosition(pos);
+            raytracer->getCamera().setLookAt(look);
+            raytracer->getCamera().setFOV(45.0f); // Or whatever your standard FOV is
+            // Optionally, set aspect ratio as well
+            raytracer->getCamera().setAspectRatio((float)window_width / (float)window_height);
+            
             raytracer->update();
             break;
     }

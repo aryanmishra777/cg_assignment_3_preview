@@ -563,15 +563,29 @@ void GUI::renderRayTracingControls(RayTracer* raytracer, Mesh* mesh) {
     // Ray tracing parameters
     if (ImGui::SliderInt("Max Recursion Depth", &maxDepth, 1, 10)) {
         raytracer->setMaxDepth(maxDepth);
+        raytracer->trace();
     }
     
     if (ImGui::Checkbox("Enable Shadows", &enableShadows)) {
         raytracer->setEnableShadows(enableShadows);
+        raytracer->trace();
     }
     
     if (ImGui::Checkbox("Enable Reflections", &enableReflections)) {
         raytracer->setEnableReflections(enableReflections);
+        raytracer->trace();
     }
+    
+    // --- SHADOW DEBUG VIEW ---
+    static bool showShadowDebug = false;
+    if (ImGui::Checkbox("Show Shadow Debug View (Magenta)", &showShadowDebug)) {
+        raytracer->setDebugShadowView(showShadowDebug);
+        raytracer->trace();
+    }
+    if (showShadowDebug) {
+        ImGui::TextColored(ImVec4(1,0,1,1), "Magenta = Shadowed pixels. Disable for normal color.");
+    }
+    // --- END SHADOW DEBUG VIEW ---
     
     // Scene objects
     if (ImGui::CollapsingHeader("Scene Objects")) {

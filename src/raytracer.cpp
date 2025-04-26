@@ -5,8 +5,9 @@
 #include <algorithm>
 #include <thread>
 #include <mutex>
+#include <cmath>
 
-// Shader sources for displaying the framebuffer (same as in scanline.cpp)
+// Shader sources for displaying the framebuffer
 const char* raytraceVertexShaderSource = R"(
     #version 430 core
     layout (location = 0) in vec2 aPos;
@@ -233,65 +234,44 @@ Ray Camera::generateRay(float x, float y) const {
     return Ray(position, direction);
 }
 
-RayTracer::RayTracer(int w, int h) : width(w), height(h) {
-    // Initialize ray tracing parameters
+// --- SOFTWARE FRAMEBUFFER ---
+
+RayTracer::RayTracer(int w, int h)
+    : width(w), height(h), framebufferDirty(true), debugShadowView(false) // Initialize debugShadowView
+{
     maxDepth = 3;
     enableShadows = true;
     enableReflections = true;
-    
-    // Setup camera
-    camera = Camera(
-        glm::vec3(0.0f, 0.0f, 5.0f),   // Position
-        glm::vec3(0.0f, 0.0f, 0.0f),   // Look at
-        glm::vec3(0.0f, 1.0f, 0.0f),   // Up vector
-        45.0f,                          // FOV
-        static_cast<float>(width) / static_cast<float>(height) // Aspect ratio
-    );
-    
-    // Setup a default light
-    lights.push_back(Light(glm::vec3(5.0f, 5.0f, 5.0f)));
-    
-    // Setup OpenGL objects
+    camera = Camera(glm::vec3(0.0f, 0.0f, 5.0f),
+                    glm::vec3(0.0f, 0.0f, 0.0f),
+                    glm::vec3(0.0f, 1.0f, 0.0f),
+                    45.0f,
+                    static_cast<float>(width) / static_cast<float>(height));
+    frameBuffer.resize(width * height, glm::vec3(0.0f));
     setupFramebuffer();
     setupQuad();
     setupShaders();
-    
-    // Clear the framebuffer initially
-    clear(glm::vec3(0.2f, 0.2f, 0.3f)); // Dark blue-gray background
 }
 
 RayTracer::~RayTracer() {
-    // Cleanup OpenGL resources
     glDeleteTextures(1, &framebufferTexture);
     glDeleteFramebuffers(1, &framebufferFBO);
     glDeleteVertexArrays(1, &quadVAO);
     glDeleteBuffers(1, &quadVBO);
     glDeleteProgram(displayShader);
-    
-    // Clear scene
-    objects.clear();
-    lights.clear();
 }
 
 void RayTracer::setupFramebuffer() {
-    // Create a texture for the framebuffer
     glGenTextures(1, &framebufferTexture);
     glBindTexture(GL_TEXTURE_2D, framebufferTexture);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, width, height, 0, GL_RGB, GL_FLOAT, NULL);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, width, height, 0, GL_RGB, GL_FLOAT, nullptr);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     glBindTexture(GL_TEXTURE_2D, 0);
-    
-    // Create a framebuffer object
+
     glGenFramebuffers(1, &framebufferFBO);
     glBindFramebuffer(GL_FRAMEBUFFER, framebufferFBO);
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, framebufferTexture, 0);
-    
-    // Check framebuffer status
-    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
-        std::cerr << "Framebuffer not complete!" << std::endl;
-    }
-    
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 }
 
@@ -304,7 +284,7 @@ void RayTracer::setupQuad() {
          1.0f, -1.0f,    1.0f, 0.0f,
         
         -1.0f,  1.0f,    0.0f, 1.0f,
-         1.0f, -1.0f,    1.0f, 0.0f,
+         1.0f, -1.0f,    0.0f, 0.0f,
          1.0f,  1.0f,    1.0f, 1.0f
     };
     
@@ -374,280 +354,165 @@ void RayTracer::setupShaders() {
 }
 
 void RayTracer::resize(int w, int h) {
-    // Update dimensions
-    width = w;
-    height = h;
-    
-    // Update camera aspect ratio
+    width = w; height = h;
+    frameBuffer.resize(width * height, glm::vec3(0.0f));
+    framebufferDirty = true;
     camera.setAspectRatio(static_cast<float>(width) / static_cast<float>(height));
-    
-    // Recreate framebuffer texture with new size
     glBindTexture(GL_TEXTURE_2D, framebufferTexture);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, width, height, 0, GL_RGB, GL_FLOAT, NULL);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, width, height, 0, GL_RGB, GL_FLOAT, nullptr);
     glBindTexture(GL_TEXTURE_2D, 0);
 }
 
-void RayTracer::addSphere(const glm::vec3& position, float radius, const Material& material) {
-    objects.push_back(std::make_shared<Sphere>(position, radius, material));
-}
-
-void RayTracer::addCube(const glm::vec3& position, const glm::vec3& size, const Material& material) {
-    objects.push_back(std::make_shared<Cube>(position, size, material));
-}
-
-void RayTracer::addMesh(const glm::vec3& position, const Mesh* mesh, const Material& material) {
-    objects.push_back(std::make_shared<MeshObject>(position, mesh->getTriangles(), material));
-}
-
-void RayTracer::addLight(const Light& light) {
-    lights.push_back(light);
-}
-
-void RayTracer::clearScene() {
-    objects.clear();
-    lights.clear();
-}
-
 void RayTracer::setPixel(int x, int y, const glm::vec3& color) {
-    // Check if the pixel is within bounds
-    if (x < 0 || x >= width || y < 0 || y >= height) {
-        return;
-    }
-    
-    // Bind framebuffer for pixel writing
-    glBindFramebuffer(GL_FRAMEBUFFER, framebufferFBO);
-    
-    // Set the pixel color
-    glm::vec3 pixelColor = color;
-    glDrawBuffer(GL_COLOR_ATTACHMENT0);
-    glReadBuffer(GL_COLOR_ATTACHMENT0);
-    
-    // Write the pixel
-    glReadPixels(x, y, 1, 1, GL_RGB, GL_FLOAT, &pixelColor);
-    glDrawPixels(1, 1, GL_RGB, GL_FLOAT, &color);
-    
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    if (x < 0 || x >= width || y < 0 || y >= height) return;
+    frameBuffer[y * width + x] = color;
+    framebufferDirty = true;
 }
 
-void RayTracer::clear(const glm::vec3& color) {
-    // Bind framebuffer for clearing
-    glBindFramebuffer(GL_FRAMEBUFFER, framebufferFBO);
-    glClearColor(color.r, color.g, color.b, 1.0f);
-    glClear(GL_COLOR_BUFFER_BIT);
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+void RayTracer::updateFramebuffer() {
+    if (framebufferDirty) {
+        glBindTexture(GL_TEXTURE_2D, framebufferTexture);
+        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, width, height, GL_RGB, GL_FLOAT, frameBuffer.data());
+        glBindTexture(GL_TEXTURE_2D, 0);
+        framebufferDirty = false;
+    }
 }
+
+// --- RAY TRACING ALGORITHMS ---
 
 RayHit RayTracer::findClosestIntersection(const Ray& ray) {
-    RayHit closestHit;
-    
-    // Check intersection with all objects
-    for (const auto& object : objects) {
-        RayHit hit = object->intersect(ray);
-        
-        // If there's a hit and it's closer than the current closest
-        if (hit.hit && hit.distance < closestHit.distance) {
-            closestHit = hit;
-            closestHit.object = object;
+    RayHit closest;
+    for (const auto& obj : objects) {
+        RayHit hit = obj->intersect(ray);
+        if (hit.hit && hit.distance < closest.distance) {
+            closest = hit;
+            closest.object = obj;
         }
     }
-    
-    return closestHit;
+    return closest;
 }
 
 bool RayTracer::isInShadow(const glm::vec3& point, const Light& light) {
     if (!enableShadows) return false;
-    
-    // Direction from point to light
     glm::vec3 lightDir = light.position - point;
-    float lightDistance = glm::length(lightDir);
+    float dist = glm::length(lightDir);
     lightDir = glm::normalize(lightDir);
-    
-    // Create shadow ray (add a small offset to avoid self-intersection)
     Ray shadowRay(point + 0.001f * lightDir, lightDir);
-    
-    // Check if any object blocks the light
-    for (const auto& object : objects) {
-        RayHit hit = object->intersect(shadowRay);
-        
-        // If there's a hit between the point and the light
-        if (hit.hit && hit.distance < lightDistance) {
-            return true; // Point is in shadow
-        }
+    for (const auto& obj : objects) {
+        RayHit hit = obj->intersect(shadowRay);
+        if (hit.hit && hit.distance < dist) return true;
     }
-    
-    return false; // No shadow
+    return false;
 }
 
 glm::vec3 RayTracer::traceRay(const Ray& ray, int depth) {
-    // Base case for recursion
-    if (depth <= 0) {
-        return glm::vec3(0.0f);
-    }
-    
-    // Find closest intersection
+    if (depth <= 0) return glm::vec3(0.0f);
     RayHit hit = findClosestIntersection(ray);
-    
-    // If no intersection, return background color
-    if (!hit.hit) {
-        return glm::vec3(0.2f, 0.2f, 0.3f); // Dark blue-gray background
+    if (!hit.hit) return glm::vec3(0.2f, 0.2f, 0.3f);
+
+    // --- SHADOW DEBUG VISUALIZATION ---
+    // Highlight shadowed area with magenta for debug
+    if (debugShadowView && !lights.empty() && isInShadow(hit.point, lights[0])) {
+        return glm::vec3(1.0f, 0.0f, 1.0f); // Magenta for shadowed points
     }
-    
-    // Get material properties
+    // --- END SHADOW DEBUG ---
+
     glm::vec3 materialColor = hit.material.color;
     float ambient = hit.material.ambient;
     float diffuse = hit.material.diffuse;
     float specular = hit.material.specular;
     float shininess = hit.material.shininess;
     float reflectivity = hit.material.reflectivity;
-    
-    // Calculate lighting
+
     glm::vec3 color = ambient * materialColor; // Ambient component
-    
+
     for (const auto& light : lights) {
-        // Skip if in shadow
-        if (isInShadow(hit.point, light)) {
-            continue;
-        }
-        
-        // Direction to light
+        if (isInShadow(hit.point, light)) continue;
         glm::vec3 lightDir = glm::normalize(light.position - hit.point);
-        
-        // Diffuse component
         float diff = std::max(glm::dot(hit.normal, lightDir), 0.0f);
         glm::vec3 diffuseColor = diffuse * diff * materialColor * light.color * light.intensity;
-        
-        // Specular component
         glm::vec3 viewDir = glm::normalize(-ray.direction);
         glm::vec3 reflectDir = glm::reflect(-lightDir, hit.normal);
         float spec = std::pow(std::max(glm::dot(viewDir, reflectDir), 0.0f), shininess);
         glm::vec3 specularColor = specular * spec * light.color * light.intensity;
-        
-        // Add to final color
         color += diffuseColor + specularColor;
     }
-    
-    // Add reflection
     if (enableReflections && reflectivity > 0.0f) {
-        // Calculate reflection ray
         glm::vec3 reflectDir = glm::reflect(ray.direction, hit.normal);
         Ray reflectionRay(hit.point + 0.001f * reflectDir, reflectDir);
-        
-        // Recursively trace reflection ray
         glm::vec3 reflectionColor = traceRay(reflectionRay, depth - 1);
-        
-        // Add reflection to final color
         color = color * (1.0f - reflectivity) + reflectionColor * reflectivity;
     }
-    
-    // Clamp color values to [0, 1]
     color = glm::clamp(color, glm::vec3(0.0f), glm::vec3(1.0f));
-    
     return color;
 }
 
 void RayTracer::trace() {
-    // Skip if there are no objects or lights
-    if (objects.empty() || lights.empty()) {
-        return;
-    }
-    
-    // Multithreaded ray tracing
-    const int num_threads = std::thread::hardware_concurrency();
+    if (objects.empty() || lights.empty()) return;
+    const int numThreads = std::max(1u, std::thread::hardware_concurrency());
     std::vector<std::thread> threads;
     std::mutex mtx;
-    
-    // Define function for tracing a section of the image
-    auto trace_section = [this, &mtx](int start_y, int end_y) {
-        for (int y = start_y; y < end_y; y++) {
-            for (int x = 0; x < width; x++) {
-                // Calculate normalized device coordinates
-                float u = static_cast<float>(x) / static_cast<float>(width);
-                float v = static_cast<float>(y) / static_cast<float>(height);
-                
-                // Generate ray from camera
-                Ray ray = camera.generateRay(u, v);
-                
-                // Trace the ray
-                glm::vec3 color = traceRay(ray, maxDepth);
-                
-                // Set the pixel color
-                {
-                    std::lock_guard<std::mutex> lock(mtx);
-                    setPixel(x, y, color);
-                }
-            }
+    auto trace_section = [this, &mtx](int y0, int y1) {
+        for (int y = y0; y < y1; ++y) for (int x = 0; x < width; ++x) {
+            float u = (x + 0.5f) / float(width);
+            float v = (y + 0.5f) / float(height);
+            Ray ray = camera.generateRay(u, v);
+            glm::vec3 color = traceRay(ray, maxDepth);
+            std::lock_guard<std::mutex> lock(mtx);
+            setPixel(x, y, color);
         }
     };
-    
-    // Divide the image into sections for each thread
-    int section_height = height / num_threads;
-    for (int i = 0; i < num_threads; i++) {
-        int start_y = i * section_height;
-        int end_y = (i == num_threads - 1) ? height : (i + 1) * section_height;
-        
-        threads.emplace_back(trace_section, start_y, end_y);
+    int rowsPerThread = height / numThreads;
+    for (int i = 0; i < int(numThreads); ++i) {
+        int y0 = i * rowsPerThread;
+        int y1 = (i == numThreads - 1) ? height : (i + 1) * rowsPerThread;
+        threads.emplace_back(trace_section, y0, y1);
     }
-    
-    // Wait for all threads to finish
-    for (auto& thread : threads) {
-        thread.join();
-    }
+    for (auto& t : threads) t.join();
+}
+
+void RayTracer::clear(const glm::vec3& color) {
+    std::fill(frameBuffer.begin(), frameBuffer.end(), color);
+    framebufferDirty = true;
+}
+
+void RayTracer::addSphere(const glm::vec3& pos, float r, const Material& mat) {
+    objects.push_back(std::make_shared<Sphere>(pos, r, mat));
+}
+
+void RayTracer::addCube(const glm::vec3& pos, const glm::vec3& size, const Material& mat) {
+    objects.push_back(std::make_shared<Cube>(pos, size, mat));
+}
+
+void RayTracer::addMesh(const glm::vec3& pos, const Mesh* mesh, const Material& mat) {
+    objects.push_back(std::make_shared<MeshObject>(pos, mesh->getTriangles(), mat));
+}
+
+void RayTracer::addLight(const Light& l) {
+    lights.push_back(l);
+}
+
+void RayTracer::clearScene() {
+    objects.clear(); 
+    lights.clear();
 }
 
 void RayTracer::update() {
-    // Add a default scene if empty
-    if (objects.empty()) {
-        // Add some default objects
-        Material redMaterial;
-        redMaterial.color = glm::vec3(1.0f, 0.1f, 0.1f);
-        redMaterial.reflectivity = 0.3f;
-        
-        Material blueMaterial;
-        blueMaterial.color = glm::vec3(0.1f, 0.1f, 1.0f);
-        blueMaterial.reflectivity = 0.3f;
-        
-        Material greenMaterial;
-        greenMaterial.color = glm::vec3(0.1f, 0.8f, 0.1f);
-        greenMaterial.reflectivity = 0.1f;
-        
-        // Ground plane as a large flat cube
-        addCube(glm::vec3(0.0f, -1.5f, 0.0f), glm::vec3(10.0f, 0.1f, 10.0f), greenMaterial);
-        
-        // Add two spheres
-        addSphere(glm::vec3(-1.0f, 0.0f, -1.0f), 1.0f, redMaterial);
-        addSphere(glm::vec3(1.5f, 0.0f, 0.0f), 1.0f, blueMaterial);
-    }
-    
-    // If no lights, add a default light
-    if (lights.empty()) {
-        addLight(Light(glm::vec3(5.0f, 5.0f, 5.0f)));
-    }
-    
-    // Trace the scene
     trace();
+    updateFramebuffer();
 }
 
 void RayTracer::render() {
-    // Bind back to the default framebuffer
+    updateFramebuffer();
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
-    
-    // Clear default framebuffer
-    glClearColor(0.2f, 0.2f, 0.2f, 1.0f);
+    glClearColor(0.2f,0.2f,0.2f,1.0f);
     glClear(GL_COLOR_BUFFER_BIT);
-    
-    // Use the display shader
     glUseProgram(displayShader);
-    
-    // Bind the framebuffer texture
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, framebufferTexture);
     glUniform1i(glGetUniformLocation(displayShader, "screenTexture"), 0);
-    
-    // Render the quad
     glBindVertexArray(quadVAO);
     glDrawArrays(GL_TRIANGLES, 0, 6);
     glBindVertexArray(0);
-    
-    // Reset OpenGL state
     glUseProgram(0);
 }
